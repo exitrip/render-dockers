@@ -1,0 +1,716 @@
+diff --git a/docker-deepmatching-gpu/Dockerfile b/docker-deepmatching-gpu/Dockerfile
+new file mode 100644
+index 0000000..6d59cac
+--- /dev/null
++++ b/docker-deepmatching-gpu/Dockerfile
+@@ -0,0 +1,85 @@
++FROM nvidia/cuda:8.0-cudnn5-devel
++
++# PYTHON 2, DO NOT USE PYTHON 3!
++
++LABEL maintainer "Shaun Berryman <shaun@shaunberryman.com>"
++
++# Supress warnings about missing front-end. As recommended at:
++# http://stackoverflow.com/questions/22466255/is-it-possibe-to-answer-dialog-questions-when-installing-under-docker
++ARG DEBIAN_FRONTEND=noninteractive
++
++# Install some dependencies
++RUN apt-get update && \
++    apt-get install -y \
++      git \
++      unzip \
++      wget \
++      build-essential \
++      cmake \
++      git \
++      nano \
++      pkg-config \
++      libprotobuf-dev \
++      libleveldb-dev \
++      libsnappy-dev \
++      libhdf5-serial-dev \
++      protobuf-compiler \
++      libatlas-base-dev \
++      && \
++    apt-get install --no-install-recommends -y libboost-all-dev && \
++    apt-get install -y \
++      libgflags-dev \
++      libgoogle-glog-dev \
++      liblmdb-dev \
++      python-pip \
++      python-dev \
++      python-numpy \
++      python-scipy \
++      libopencv-dev \
++      python-opencv \
++      python-matplotlib \
++      swig \
++      ffmpeg \
++      && \
++  apt-get clean && \
++  apt-get autoremove && \
++  rm -rf /var/lib/apt/lists/*
++
++#update pip for silence
++RUN pip install --upgrade pip
++
++# cuDNN v3
++COPY cudnn-7.0-linux-x64-v3.0.8-prod.tgz /root/
++RUN cd /root && \
++#wget "http://192.168.1.6:8001/cudnn-7.0-linux-x64-v3.0.8-prod.tgz" && \
++    tar xf cudnn-7.0-linux-x64-v3.0.8-prod.tgz && \
++    rm cudnn-7.0-linux-x64-v3.0.8-prod.tgz && \
++    mv /root/cuda/include/* /usr/include/ && \
++    mv /root/cuda/lib64/* /usr/lib/x86_64-linux-gnu/ && \
++    rm -rf /root/cuda
++
++# DeepMatching GPU
++COPY Makefile /root/
++RUN cd /root && \
++    # wget "DOWNLOAD FROM NVIDIA DIRECTLY" && \
++    wget "http://lear.inrialpes.fr/src/deepmatching/code/deepmatching_gpu_1.0.zip" && \
++    unzip deepmatching_gpu_1.0.zip && \
++    rm deepmatching_gpu_1.0.zip && \
++    cd web_gpudm_1.0 && \
++    unzip caffe.zip && \
++    rm caffe.zip && \
++    cd caffe/python && \
++    for req in $(cat requirements.txt); do pip install $req; done && \
++    cd ../ && \
++    mkdir build && \
++    cd build && \
++    cmake -DCUDA_ARCH_NAME="Manual" \ 
++    -DCUDA_ARCH_BIN="52 60 61" -DCUDA_ARCH_PTX="60 61" .. && \
++    make -j"$(nproc)" && \
++    make install -j"$(nproc)" && \
++    cd ../../ && \
++    mv /root/Makefile /root/web_gpudm_1.0/ && \
++    make all
++
++WORKDIR "/root"
++CMD ["/bin/bash"]
+diff --git a/docker-deepmatching-gpu/Makefile b/docker-deepmatching-gpu/Makefile
+new file mode 100644
+index 0000000..8089e4c
+--- /dev/null
++++ b/docker-deepmatching-gpu/Makefile
+@@ -0,0 +1,56 @@
++# Path to caffe's install directory that was created by Cmake
++CAFFEDIR=/root/web_gpudm_1.0/caffe/build/install
++CAFFELIB=$(CAFFEDIR)/lib
++
++# 1: Include the location of the libcaffe.so library in the _gpudm.so library. Usefull if the CAFFEDIR is not in a standard location
++# for libraries because you don't need to set the location by setting the variable LD_LIBRARY_PATH before using _gpudm.so.
++# A disadvantage is, that _gpudm.so won't work anymore if you move the CAFFEDIR folder.
++INCLUDE_CAFFE_LOCATION = 1
++
++OPTFLAGS=-g -O2
++
++# Path to python header file
++INCLUDES += -I/usr/include/python2.7/
++# Path to caffe's header files
++INCLUDES += -I$(CAFFEDIR)/include/
++# Path to hdf5's header files
++INCLUDES += -I/usr/include/hdf5/serial/
++# Path to CUDA
++INCLUDES += -I/usr/local/cuda-8.0/targets/x86_64-linux/include/
++
++#include gpudm/Makefile.config
++CUDA_ARCH := -gencode arch=compute_35,code=sm_35 \
++		-gencode arch=compute_50,code=sm_50 \
++		-gencode arch=compute_50,code=compute_50 \
++		-gencode arch=compute_60,code=sm_60 \
++		-gencode arch=compute_61,code=sm_61
++
++HEADERS := $(shell find . -maxdepth 1 -name '*.hpp')
++EXTRA_LAYERS := $(shell find . -maxdepth 1 -name '*.hpp')
++
++all: _gpudm.so
++
++_gpudm.so: gpudm_wrap.o $(EXTRA_LAYERS:.hpp=.o) $(EXTRA_LAYERS:.hpp=.cuo)
++ifeq ($(INCLUDE_CAFFE_LOCATION),1)
++	g++ $(OPTFLAGS) -fPIC -L$(CAFFELIB) $^ -shared -Xlinker -rpath $(CAFFELIB) -o $@ -lcaffe -lcusparse
++else
++	g++ $(OPTFLAGS) -fPIC -L$(CAFFELIB) $^ -o $@ -lcaffe -lcusparse
++endif
++
++%.cuo: %.cu %.hpp
++	nvcc $(CUDA_ARCH) -Xcompiler -fPIC $(INCLUDES) $(OPTFLAGS) -c $< -o $@
++
++gpudm_wrap.cxx: gpudm.swig $(HEADERS)
++	swig -cpperraswarn -python -c++ $(INCLUDES) gpudm.swig
++
++gpudm_wrap.o: gpudm_wrap.cxx
++	g++ $(OPTFLAGS) -c gpudm_wrap.cxx -fPIC $(INCLUDES) -o gpudm_wrap.o
++
++%.o: %.cpp %.hpp
++	g++ $(OPTFLAGS) -c $< -fPIC $(INCLUDES) -L$(CAFFELIB) -o $@
++
++clean:
++	rm -f *.pyc *~ _gpudm.so gpudm_wrap.o $(EXTRA_LAYERS:.hpp=.o) $(EXTRA_LAYERS:.hpp=.cuo)
++
++cleanswig: clean
++	rm -f gpudm.py gpudm_wrap.cxx gpudm_wrap.o
+diff --git a/docker-neural-style-transfer/Dockerfile b/docker-neural-style-transfer/Dockerfile
+new file mode 100644
+index 0000000..f04b3d4
+--- /dev/null
++++ b/docker-neural-style-transfer/Dockerfile
+@@ -0,0 +1,56 @@
++FROM nvidia/cuda:10.0-cudnn7-runtime
++ 
++# PYTHON 2, DO NOT USE PYTHON 3!
++
++LABEL maintainer "ed"
++
++# Supress warnings about missing front-end. As recommended at:
++# http://stackoverflow.com/questions/22466255/is-it-possibe-to-answer-dialog-questions-when-installing-under-docker
++ARG DEBIAN_FRONTEND=noninteractive
++
++# Install some dependencies
++RUN apt-get update && \
++    apt-get install -y \
++      git \
++      unzip \
++      wget \
++      build-essential \
++      libpng-dev \
++      nano \
++      python-pip \
++      python-dev \
++      ffmpeg \
++      && \
++  apt-get clean && \
++  apt-get autoremove && \
++  rm -rf /var/lib/apt/lists/*
++
++#update pip for silence
++RUN pip install --upgrade pip 
++RUN pip install opencv-python opencv-contrib-python numpy Pillow scipy tensorflow
++
++# copy magic weights
++RUN mkdir /root/neurst
++#COPY ../imagenet-vgg-verydeep-19.mat /root/neurst/
++RUN cd /root/neurst && \
++  wget "http://www.vlfeat.org/matconvnet/models/imagenet-vgg-verydeep-19.mat"
++
++# get and build flow-code
++RUN  cd /root/neurst && \
++  wget -r -np -X imageLib-old -R "*.html" \
++    "http://vision.middlebury.edu/flow/code/flow-code" && \
++  cd flow-code && \
++  make all
++
++#clone neurst repo
++RUN cd /root && \
++    git clone "https://github.com/cysmith/neural-style-tf.git" neurst
++
++#copy and apply the local patch
++COPY ./ed.patch /root/neurst
++RUN cd /root/neurst && \
++    patch -p1 -i /root/neurst/ed.patch
++  
++
++WORKDIR "/root/neurst/"
++CMD ["/bin/bash"]
+diff --git a/neural_style.py b/neural_style.py
+index a5f8fc7..eb43906 100644
+--- a/neural_style.py
++++ b/neural_style.py
+@@ -25,8 +25,7 @@ def parse_args():
+     help='Filename of the output image.')
+ 
+   parser.add_argument('--style_imgs', nargs='+', type=str,
+-    help='Filenames of the style images (example: starry-night.jpg)', 
+-    required=True)
++    help='Filenames of the style images (example: starry-night.jpg)')
+   
+   parser.add_argument('--style_imgs_weights', nargs='+', type=float,
+     default=[1.0],
+@@ -37,7 +36,8 @@ def parse_args():
+ 
+   parser.add_argument('--style_imgs_dir', type=str,
+     default='./styles',
+-    help='Directory path to the style images. (default: %(default)s)')
++    help='Directory path to the style images. (default: %(default)s)', 
++    required=True)
+ 
+   parser.add_argument('--content_img_dir', type=str,
+     default='./image_input',
+@@ -157,12 +157,15 @@ def parse_args():
+   parser.add_argument('--video', action='store_true', 
+     help='Boolean flag indicating if the user is generating a video.')
+ 
++  parser.add_argument('--stylize_with_video', action='store_true', 
++    help='Boolean flag indicating if the user is stylizing with a video.')
++    
+   parser.add_argument('--start_frame', type=int, 
+     default=1,
+     help='First frame number.')
+   
+   parser.add_argument('--end_frame', type=int, 
+-    default=1,
++    default=9999,
+     help='Last frame number.')
+   
+   parser.add_argument('--first_frame_type', type=str,
+@@ -732,6 +735,20 @@ def get_style_images(content_img):
+     style_imgs.append(img)
+   return style_imgs
+ 
++def get_style_video_frame(content_img, num):
++  _, ch, cw, cd = content_img.shape
++  style_imgs = []
++  fn = args.content_frame_frmt.format(str(num).zfill(4))
++  path = os.path.join(args.style_imgs_dir, fn)
++  # bgr image
++  img = cv2.imread(path, cv2.IMREAD_COLOR)
++  check_image(img, path)
++  img = img.astype(np.float32)
++  img = cv2.resize(img, dsize=(cw, ch), interpolation=cv2.INTER_AREA)
++  img = preprocess(img)
++  style_imgs.append(img)
++  return style_imgs
++  
+ def get_noise_image(noise_ratio, content_img):
+   np.random.seed(args.seed)
+   noise_img = np.random.uniform(-20., 20., content_img.shape).astype(np.float32)
+@@ -831,7 +848,10 @@ def render_video():
+       print('\n---- RENDERING VIDEO FRAME: {}/{} ----\n'.format(frame, args.end_frame))
+       if frame == 1:
+         content_frame = get_content_frame(frame)
+-        style_imgs = get_style_images(content_frame)
++        if args.stylize_with_video:
++          style_imgs = get_style_video_frame(content_frame, frame)
++        else:
++          style_imgs = get_style_images(content_frame)
+         init_img = get_init_image(args.first_frame_type, content_frame, style_imgs, frame)
+         args.max_iterations = args.first_frame_iterations
+         tick = time.time()
+@@ -840,9 +860,14 @@ def render_video():
+         print('Frame {} elapsed time: {}'.format(frame, tock - tick))
+       else:
+         content_frame = get_content_frame(frame)
+-        style_imgs = get_style_images(content_frame)
++        if args.stylize_with_video:
++          style_imgs = get_style_video_frame(content_frame, frame)
++        else:
++          style_imgs = get_style_images(content_frame)
+         init_img = get_init_image(args.init_frame_type, content_frame, style_imgs, frame)
+         args.max_iterations = args.frame_iterations
++#        if not args.max_iterations == 200:
++#          args.frame_iterations = args.frame_iterations - 20
+         tick = time.time()
+         stylize(content_frame, style_imgs, init_img, frame)
+         tock = time.time()
+diff --git a/stylize_video.sh b/stylize_video.sh
+index 5f39f89..145c40b 100644
+--- a/stylize_video.sh
++++ b/stylize_video.sh
+@@ -65,9 +65,11 @@ else
+ fi
+ num_frames=$(find "$temp_dir" -iname "*.ppm" | wc -l)
+ 
+-echo "Computing optical flow [CPU]. This will take a while..."
++last_frame=${3:-num_frames}
++
++echo "Computing optical flow [CPU] up to frame ${last_frame}. This will take a while..."
+ cd ./video_input
+-bash make-opt-flow.sh ${content_filename}/frame_%04d.ppm ${content_filename}
++bash make-opt-flow.sh ${content_filename}/frame_%04d.ppm ${content_filename} 1 1 ${last_frame}
+ cd ..
+ 
+ echo "Rendering stylized video frames [CPU & GPU]. This will take a while..."
+@@ -75,7 +77,7 @@ python neural_style.py --video \
+ --video_input_dir "${temp_dir}" \
+ --style_imgs_dir "${style_dir}" \
+ --style_imgs "${style_filename}" \
+---end_frame "${num_frames}" \
++--end_frame "${last_frame}" \
+ --max_size "${max_size}" \
+ --verbose;
+ 
+@@ -84,6 +86,6 @@ echo "Converting image sequence to video.  This should be quick..."
+ $FFMPEG -v quiet -i ./video_output/frame_%04d.ppm ./video_output/${content_filename}-stylized.$extension
+ 
+ # Clean up garbage
+-if [ -d "${temp_dir}" ]; then
+-  rm -rf "${temp_dir}"
+-fi
++#if [ -d "${temp_dir}" ]; then
++#  rm -rf "${temp_dir}"
++#fi
+diff --git a/stylize_video_on_video.sh b/stylize_video_on_video.sh
+new file mode 100644
+index 0000000..9fa0419
+--- /dev/null
++++ b/stylize_video_on_video.sh
+@@ -0,0 +1,94 @@
++set -e
++# Get a carriage return into `cr`
++cr=`echo $'\n.'`
++cr=${cr%.}
++
++# Find out whether ffmpeg or avconv is installed on the system
++FFMPEG=ffmpeg
++command -v $FFMPEG >/dev/null 2>&1 || {
++  FFMPEG=avconv
++  command -v $FFMPEG >/dev/null 2>&1 || {
++    echo >&2 "This script requires either ffmpeg or avconv installed.  Aborting."; exit 1;
++  }
++}
++
++if [ "$#" -le 1 ]; then
++   echo "Usage: bash stylize_video.sh <path_to_video> <path_to_style_image>"
++   exit 1
++fi
++
++echo ""
++read -p "Did you install the required dependencies? [y/n] $cr > " dependencies
++
++if [ "$dependencies" != "y" ]; then
++  echo "Error: Requires dependencies: tensorflow, opencv2 (python), scipy"
++  exit 1;
++fi
++
++echo ""
++read -p "Do you have a CUDA enabled GPU? [y/n] $cr > " cuda
++
++if [ "$cuda" != "y" ]; then
++  echo "Error: GPU required to render videos in a feasible amount of time."
++  exit 1;
++fi
++
++# Parse arguments
++content_video="$1"
++content_dir=$(dirname "$content_video")
++content_filename=$(basename "$content_video")
++content_extension="${content_filename##*.}"
++content_filename="${content_filename%.*}"
++content_filename=${content_filename//[%]/x}
++
++style_video="$2"
++style_dir=$(dirname "$style_video")
++style_filename=$(basename "$style_video")
++style_filename="${style_filename%.*}"
++style_filename=${style_filename//[%]/x}
++
++if [ ! -d "./video_input" ]; then
++  mkdir -p ./video_input
++fi
++temp_content_dir="./video_input/${content_filename}"
++temp_style_dir="./video_input/${style_filename}"
++
++# Create output folder
++mkdir -p "$temp_content_dir"
++mkdir -p "$temp_style_dir"
++
++# Save frames of the style video as individual image files
++$FFMPEG -v quiet -i "$2" "${temp_style_dir}/frame_%04d.ppm"
++eval $(ffprobe -v error -of flat=s=_ -select_streams v:0 -show_entries stream=width,height "$2")
++
++# Save frames of the content video as individual image files
++$FFMPEG -v quiet -i "$1" "${temp_content_dir}/frame_%04d.ppm"
++eval $(ffprobe -v error -of flat=s=_ -select_streams v:0 -show_entries stream=width,height "$1")
++width="${streams_stream_0_width}"
++height="${streams_stream_0_height}"
++if [ "$width" -gt "$height" ]; then
++  max_size="$width"
++else
++  max_size="$height"
++fi
++num_frames=$(find "$temp_content_dir" -iname "*.ppm" | wc -l)
++
++last_frame=${3:-num_frames}
++
++echo "Computing optical flow [CPU] up to frame ${last_frame}. This will take a while..."
++cd ./video_input
++bash make-opt-flow.sh ${content_filename}/frame_%04d.ppm ${content_filename} 1 1 ${last_frame}
++cd ..
++
++echo "Rendering stylized video frames [CPU & GPU]. This will take a while..."
++python neural_style.py --video \
++--stylize_with_video \
++--video_input_dir "${temp_content_dir}" \
++--style_imgs_dir "${temp_style_dir}" \
++--end_frame "${last_frame}" \
++--max_size "${max_size}" \
++--verbose;
++
++# Create video from output images.
++echo "Converting image sequence to video.  This should be quick..."
++$FFMPEG -v quiet -i ./video_output/frame_%04d.ppm ./video_output/${content_filename}-stylized.$content_extension
+diff --git a/video_input/make-opt-flow-gpu.sh b/video_input/make-opt-flow-gpu.sh
+new file mode 100644
+index 0000000..059b809
+--- /dev/null
++++ b/video_input/make-opt-flow-gpu.sh
+@@ -0,0 +1,65 @@
++# Specify the path to the optical flow utility here.
++# Also check line 44 and 47 whether the arguments are in the correct order.
++
++# deepflow and deepmatching optical flow binaries
++flowCommandLine="bash run-deepflow-gpu.sh"
++
++if [ -z "$flowCommandLine" ]; then
++  echo "Please open make-opt-flow.sh and specify the command line for computing the optical flow."
++  exit 1
++fi
++
++if [ ! -f ./consistencyChecker/consistencyChecker ]; then
++  if [ ! -f ./consistencyChecker/Makefile ]; then
++    echo "Consistency checker makefile not found."
++    exit 1
++  fi
++  cd consistencyChecker/
++  make
++  cd ..
++fi
++
++filePattern=$1
++folderName=$2
++startFrame=${3:-1}
++stepSize=${4:-1}
++lastFrame=${5:-1000000}        
++
++
++if [ "$#" -le 1 ]; then
++   echo "Usage: ./make-opt-flow <filePattern> <outputFolder> [<startNumber> [<stepSize>]]"
++   echo -e "\tfilePattern:\tFilename pattern of the frames of the videos."
++   echo -e "\toutputFolder:\tOutput folder."
++   echo -e "\tstartNumber:\tThe index of the first frame. Default: 1"
++   echo -e "\tstepSize:\tThe step size to create long-term flow. Default: 1"
++   echo -e "\tend:\tThe last frame to process. Default: 1e6"
++   exit 1
++fi
++
++i=$[$startFrame]
++j=$[$startFrame + $stepSize]
++
++mkdir -p "${folderName}"
++
++while [ "$j" -lt "$lastFrame" ]; do
++  file1=$(printf "$filePattern" "$i")
++  file2=$(printf "$filePattern" "$j")
++  if [ -a $file2 ]; then
++    if [ ! -f ${folderName}/forward_${i}_${j}.flo ]; then
++      eval $flowCommandLine "$file1" "$file2" "${folderName}/forward_${i}_${j}.flo"
++    fi
++    if [ ! -f ${folderName}/backward_${j}_${i}.flo ]; then
++      eval $flowCommandLine "$file2" "$file1" "${folderName}/backward_${j}_${i}.flo"
++    fi
++    if [ ! -f ${folderName}/reliable_${j}_${i}.txt ]; then
++      ./consistencyChecker/consistencyChecker "${folderName}/backward_${j}_${i}.flo" "${folderName}/forward_${i}_${j}.flo" "${folderName}/reliable_${j}_${i}.txt"
++    fi
++    if [ ! -f ${folderName}/reliable_${i}_${j}.txt ]; then
++      ./consistencyChecker/consistencyChecker "${folderName}/forward_${i}_${j}.flo" "${folderName}/backward_${j}_${i}.flo" "${folderName}/reliable_${i}_${j}.txt"
++    fi
++  else
++    break
++  fi
++  i=$[$i +1]
++  j=$[$j +1]
++done
+diff --git a/video_input/make-opt-flow.sh b/video_input/make-opt-flow.sh
+index e9ad60a..1c970ec 100755
+--- a/video_input/make-opt-flow.sh
++++ b/video_input/make-opt-flow.sh
+@@ -23,6 +23,8 @@ filePattern=$1
+ folderName=$2
+ startFrame=${3:-1}
+ stepSize=${4:-1}
++lastFrame=${5:-1000000}        
++
+ 
+ if [ "$#" -le 1 ]; then
+    echo "Usage: ./make-opt-flow <filePattern> <outputFolder> [<startNumber> [<stepSize>]]"
+@@ -30,6 +32,7 @@ if [ "$#" -le 1 ]; then
+    echo -e "\toutputFolder:\tOutput folder."
+    echo -e "\tstartNumber:\tThe index of the first frame. Default: 1"
+    echo -e "\tstepSize:\tThe step size to create long-term flow. Default: 1"
++   echo -e "\tend:\tThe last frame to process. Default: 1e6"
+    exit 1
+ fi
+ 
+@@ -38,7 +41,7 @@ j=$[$startFrame + $stepSize]
+ 
+ mkdir -p "${folderName}"
+ 
+-while true; do
++while [ "$j" -lt "$lastFrame" ]; do
+   file1=$(printf "$filePattern" "$i")
+   file2=$(printf "$filePattern" "$j")
+   if [ -a $file2 ]; then
+@@ -48,8 +51,12 @@ while true; do
+     if [ ! -f ${folderName}/backward_${j}_${i}.flo ]; then
+       eval $flowCommandLine "$file2" "$file1" "${folderName}/backward_${j}_${i}.flo"
+     fi
+-    ./consistencyChecker/consistencyChecker "${folderName}/backward_${j}_${i}.flo" "${folderName}/forward_${i}_${j}.flo" "${folderName}/reliable_${j}_${i}.txt"
+-    ./consistencyChecker/consistencyChecker "${folderName}/forward_${i}_${j}.flo" "${folderName}/backward_${j}_${i}.flo" "${folderName}/reliable_${i}_${j}.txt"
++    if [ ! -f ${folderName}/reliable_${j}_${i}.txt ]; then
++      ./consistencyChecker/consistencyChecker "${folderName}/backward_${j}_${i}.flo" "${folderName}/forward_${i}_${j}.flo" "${folderName}/reliable_${j}_${i}.txt"
++    fi
++    if [ ! -f ${folderName}/reliable_${i}_${j}.txt ]; then
++      ./consistencyChecker/consistencyChecker "${folderName}/forward_${i}_${j}.flo" "${folderName}/backward_${j}_${i}.flo" "${folderName}/reliable_${i}_${j}.txt"
++    fi
+   else
+     break
+   fi
+diff --git a/video_input/run-deepflow-gpu.sh b/video_input/run-deepflow-gpu.sh
+new file mode 100644
+index 0000000..92e1a29
+--- /dev/null
++++ b/video_input/run-deepflow-gpu.sh
+@@ -0,0 +1,15 @@
++if [ "$#" -ne 3 ]; then
++  echo "This is an auxiliary script for makeOptFlow.sh. No need to call this script directly."
++  exit 1
++fi
++if [ ! -f deepmatching-static ] && [ ! -f deepflow2-static ]; then
++  echo "Place deepflow2-static and deepmatching-static in this directory."
++  exit 1
++fi
++
++python /root/web_gpudm_1.0/deep_matching_gpu.py -GPU 0 -ds 2 $1 $2 > tempdm.txt
++while ! test -f "./tempdm.txt"; do
++  sleep 0.1
++done
++cat tempdm.txt | ./deepflow2-static $1 $2 $3 -match
++rm tempdm.txt
+diff --git a/video_input/run-deepflow.sh b/video_input/run-deepflow.sh
+index 68fd593..a9cc373 100644
+--- a/video_input/run-deepflow.sh
++++ b/video_input/run-deepflow.sh
+@@ -7,4 +7,5 @@ if [ ! -f deepmatching-static ] && [ ! -f deepflow2-static ]; then
+   exit 1
+ fi
+ 
+-./deepmatching-static $1 $2 -nt 0 | ./deepflow2-static $1 $2 $3 -match
+\ No newline at end of file
++./deepmatching-static $1 $2 -nt 0 | ./deepflow2-static $1 $2 $3 -match
++
+diff --git a/video_input/viz.py b/video_input/viz.py
+new file mode 100644
+index 0000000..f0cbce2
+--- /dev/null
++++ b/video_input/viz.py
+@@ -0,0 +1,119 @@
++import sys
++from PIL import Image
++from numpy import *
++from matplotlib.pyplot import *
++
++
++def show_correspondences( img0, img1, corr ):
++    assert corr.shape[-1]==6
++    corr = corr[corr[:,4]>0,:]
++    
++    # make beautiful colors
++    center = corr[:,[1,0]].mean(axis=0) # array(img0.shape[:2])/2 #
++    corr[:,5] = arctan2(*(corr[:,[1,0]] - center).T)
++    corr[:,5] = int32(64*corr[:,5]/pi) % 128
++    
++    set_max = set(corr[:,5])
++    colors = {m:i for i,m in enumerate(set_max)}
++    colors = {m:cm.hsv(i/float(len(colors))) for m,i in colors.items()}
++    
++    def motion_notify_callback(event):
++      if event.inaxes==None: return
++      numaxis = event.inaxes.numaxis
++      if numaxis<0: return
++      x,y = event.xdata, event.ydata
++      ax1.lines = []
++      ax2.lines = []
++      n = sum((corr[:,2*numaxis:2*(numaxis+1)] - [x,y])**2,1).argmin() # find nearest point
++      print "\rdisplaying #%d (%d,%d) --> (%d,%d), score=%g from maxima %d" % (n,
++        corr[n,0],corr[n,1],corr[n,2],corr[n,3],corr[n,4],corr[n,5]),;sys.stdout.flush()
++      x,y = corr[n,0:2]
++      ax1.plot(x,y,'+',ms=10,mew=2,color='blue',scalex=False,scaley=False)
++      x,y = corr[n,2:4]
++      ax2.plot(x,y,'+',ms=10,mew=2,color='red',scalex=False,scaley=False)
++      # we redraw only the concerned axes
++      renderer = fig.canvas.get_renderer()
++      ax1.draw(renderer)  
++      ax2.draw(renderer)
++      fig.canvas.blit(ax1.bbox)
++      fig.canvas.blit(ax2.bbox)
++    
++    def noticks():
++      xticks([])
++      yticks([])
++    clf()
++    ax1 = subplot(221)
++    ax1.numaxis = 0
++    imshow(img0,interpolation='nearest')
++    noticks()
++    ax2 = subplot(222)
++    ax2.numaxis = 1
++    imshow(img1,interpolation='nearest')
++    noticks()
++    
++    ax = subplot(223)
++    ax.numaxis = -1
++    imshow(img0/2+64,interpolation='nearest')
++    for m in set_max:
++      plot(corr[corr[:,5]==m,0],corr[corr[:,5]==m,1],'+',ms=10,mew=2,color=colors[m],scalex=0,scaley=0)
++    noticks()
++    
++    ax = subplot(224)
++    ax.numaxis = -1
++    imshow(img1/2+64,interpolation='nearest')
++    for m in set_max:
++      plot(corr[corr[:,5]==m,2],corr[corr[:,5]==m,3],'+',ms=10,mew=2,color=colors[m],scalex=0,scaley=0)
++    noticks()
++    
++    subplots_adjust(left=0.01, bottom=0.01, right=0.99, top=0.99,
++                    wspace=0.02, hspace=0.02)
++    
++    fig = get_current_fig_manager().canvas.figure
++    cid_move = fig.canvas.mpl_connect('motion_notify_event',motion_notify_callback)
++    print "Move your mouse over the top images to visualize individual matches"
++    show()
++    fig.canvas.mpl_disconnect(cid_move)
++
++
++
++if __name__=='__main__':
++  args = sys.argv[1:]
++  img0 = array(Image.open(args[0]).convert('RGB'))
++  img1 = array(Image.open(args[1]).convert('RGB'))
++  
++  retained_matches = []
++  for line in sys.stdin:
++    line = line.split()
++    if not line or len(line)!=6 or not line[0][0].isdigit():  continue
++    x0, y0, x1, y1, score, index = line
++    retained_matches.append((float(x0),float(y0),float(x1),float(y1),float(score),float(index)))
++  
++  assert retained_matches, 'error: no matches piped to this program'
++  show_correspondences(img0, img1, array(retained_matches))
++  
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
