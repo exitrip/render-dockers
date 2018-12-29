@@ -20,6 +20,7 @@ INCLUDES += -I/usr/local/cuda-8.0/targets/x86_64-linux/include/
 
 #include gpudm/Makefile.config
 CUDA_ARCH := -gencode arch=compute_35,code=sm_35 \
+    -gencode arch=compute_37,code=sm_37 \
 		-gencode arch=compute_50,code=sm_50 \
 		-gencode arch=compute_50,code=compute_50 \
 		-gencode arch=compute_60,code=sm_60 \
