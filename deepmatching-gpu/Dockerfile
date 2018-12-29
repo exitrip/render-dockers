@@ -74,7 +74,7 @@ RUN cd /root && \
     mkdir build && \
     cd build && \
     cmake -DCUDA_ARCH_NAME="Manual" \ 
-    -DCUDA_ARCH_BIN="52 60 61" -DCUDA_ARCH_PTX="60 61" .. && \
+    -DCUDA_ARCH_BIN="52 60 61 70" -DCUDA_ARCH_PTX="60 61 70" .. && \
     make -j"$(nproc)" && \
     make install -j"$(nproc)" && \
     cd ../../ && \

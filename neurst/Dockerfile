@@ -31,7 +31,7 @@ RUN cd /root && \
   wget "https://storage.googleapis.com/tf-performance/tf_binary/tensorflow-1.12.0.a6d8ffa.AVX2.CUDA10-cp27-cp27mu-linux_x86_64.whl"
 
 RUN pip install \
-    tensorflow-1.12.0.a6d8ffa.AVX2.CUDA10-cp27-cp27mu-linux_x86_64.whl
+    /root/tensorflow-1.12.0.a6d8ffa.AVX2.CUDA10-cp27-cp27mu-linux_x86_64.whl
 
 #update pip for silence
 RUN pip install --upgrade pip wheel setuptools
